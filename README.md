@@ -21,13 +21,3 @@ The Cinetix Backend is designed to be scalable, secure, and easy to maintain. It
 2. **Environment**: Set the environment variables by creating a `.env` file in the root directory of the project.
 3. **Build**: Run `npm run build` or `yarn build` to build the application.
 4. **Run**: Start the development server with : `npm run dev`
-
-
-**📸 Screenshots**
-
-* [Insert screenshots of the application in action]
-
-
-**👤 Author**
-
-* [Your Name]
