@@ -8,8 +8,14 @@ const jwt = require("jsonwebtoken");
 const User = require("./models/UserModel");
 const Movie = require("./models/movie");
 const Ticket = require("./models/Ticket_data");
+const http = require("http");
+const { Server } = require("socket.io");
+const { createBookingService, SeatConflictError } = require("./services/bookingService");
+const { ValidationError } = require("./services/showIdentity");
 // const ticketRoutes = require("./routes/Ticket");
 const app = express();
+const bookingService = createBookingService();
+let io;
 
 // Middleware
 app.use(cors());
@@ -17,14 +23,12 @@ app.use(express.json());
 app.use(bodyParser.json());
 // app.use("/api/tickets", ticketRoutes);
 
-// Connect to MongoDB
-mongoose
-  .connect(process.env.MONGO_URI, {
+async function startServer() {
+  await mongoose.connect(process.env.MONGO_URI, {
     dbName: process.env.MONGO_DB_NAME,
     serverSelectionTimeoutMS: 43200000,
     socketTimeoutMS: 43200000,
-  })
-  .then(async () => {
+  });
     console.log("MongoDB connected");
 
     // Create test user if not exists
@@ -43,14 +47,20 @@ mongoose
       console.log("Test user inserted.");
     }
 
-    // Start server
-    app.listen(3000, () => {
+    const server = http.createServer(app);
+    io = new Server(server, { cors: { origin: "*" } });
+    io.on("connection", (socket) => {
+      socket.on("show:join", (showKey) => typeof showKey === "string" && socket.join(showKey));
+      socket.on("show:leave", (showKey) => typeof showKey === "string" && socket.leave(showKey));
+    });
+    server.listen(3000, () => {
       console.log("Server running on http://localhost:3000");
     });
-  })
-  .catch((err) => {
-    console.error("MongoDB connection error:", err);
-  });
+}
+
+function emitAvailability(availability) {
+  if (io) io.to(availability.show.showKey).emit("show:availability", availability);
+}
 
 // Authentication Middleware
 function authenticateToken(req, res, next) {
@@ -226,70 +236,25 @@ app.delete("/api/movies/:id", async (req, res) => {
   }
 });
 
-// Ticket Routes (Integrated directly)
+app.get("/api/shows/availability", async (req, res) => {
+  try {
+    const availability = await bookingService.getAvailability(req.query);
+    res.set("Cache-Control", "no-store").json({ success: true, data: availability });
+  } catch (error) {
+    res.status(error instanceof ValidationError ? 400 : 503).json({ success: false, code: error.code || "AVAILABILITY_FAILED", message: error.message });
+  }
+});
+
 app.post("/api/tickets", authenticateToken, async (req, res) => {
   try {
-    const {
-      movie_id,
-      movie_title,
-      seats,
-      cinema,
-      time,
-      date,
-      day,
-      price,
-      location,
-      session_id,
-    } = req.body;
-
-    // Validate required fields
-    if (
-      !movie_id ||
-      !movie_title ||
-      !seats ||
-      !cinema ||
-      !time ||
-      !date ||
-      !day ||
-      !price ||
-      !location
-    ) {
-      return res.status(400).json({ message: "Missing required fields" });
-    }
-
-    // Validate movie_id format
-    if (!mongoose.Types.ObjectId.isValid(movie_id)) {
-      return res.status(400).json({ message: "Invalid movie ID format" });
-    }
-
-    const newTicket = new Ticket({
-      movie_id,
-      movie_title: movie_title || movie_name,
-      user: req.user.id,
-      seats,
-      cinema,
-      time,
-      date: new Date(date),
-      day,
-      price,
-      location,
-      session_id: session_id || `TKT-${Date.now()}`,
-    });
-
-    const savedTicket = await newTicket.save();
-
-    res.status(201).json({
-      success: true,
-      data: savedTicket,
-      message: "Ticket created successfully",
-    });
+    const result = await bookingService.createBooking({ userId: req.user.id, payload: req.body });
+    emitAvailability(result.availability);
+    res.status(result.idempotent ? 200 : 201).json({ success: true, data: result.ticket, availability: result.availability });
   } catch (error) {
-    console.error("Error creating ticket:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to create ticket",
-      error: error.message,
-    });
+    if (error instanceof SeatConflictError) return res.status(409).json({ success: false, code: error.code, message: error.message, conflictingSeats: error.conflictingSeats, availability: error.availability });
+    if (error instanceof ValidationError) return res.status(400).json({ success: false, code: error.code, message: error.message });
+    console.error("Booking transaction failed:", error);
+    res.status(503).json({ success: false, code: "BOOKING_TRANSACTION_FAILED", message: "Booking could not be completed. No seats were reserved." });
   }
 });
 
@@ -323,33 +288,21 @@ app.get("/api/tickets", authenticateToken, async (req, res) => {
 
 app.delete("/api/tickets/:id", authenticateToken, async (req, res) => {
   try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-      return res.status(400).json({ message: "Invalid ticket ID format" });
-    }
-
-    const ticket = await Ticket.findOneAndDelete({
-      _id: req.params.id,
-      user: req.user.id,
-    });
-
-    if (!ticket) {
-      return res.status(404).json({
-        success: false,
-        message: "Ticket not found or unauthorized",
-      });
-    }
-
-    res.json({
-      success: true,
-      message: "Ticket cancelled successfully",
-    });
+    const result = await bookingService.cancelBooking({ userId: req.user.id, ticketId: req.params.id });
+    emitAvailability(result.availability);
+    res.json({ success: true, data: result.ticket, availability: result.availability, message: "Ticket cancelled successfully" });
   } catch (error) {
-    console.error("Error cancelling ticket:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to cancel ticket",
-    });
+    const status = error instanceof ValidationError ? (error.code === "NOT_FOUND" ? 404 : 400) : 503;
+    res.status(status).json({ success: false, code: error.code || "CANCELLATION_FAILED", message: error.message });
   }
 });
 
+if (require.main === module) {
+  startServer().catch((error) => {
+    console.error("Server startup failed:", error);
+    process.exitCode = 1;
+  });
+}
+
 module.exports = app;
+module.exports.startServer = startServer;

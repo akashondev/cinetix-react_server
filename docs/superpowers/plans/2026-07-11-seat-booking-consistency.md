@@ -130,7 +130,7 @@ Use `MongoMemoryReplSet` in Jest setup, connect Mongoose once, sync indexes, and
 
 - [ ] **Step 2: Write failing availability and isolation tests**
 
-Assert booked IDs are sorted, sold-out uses the 60-seat configured grid, and changing movie/date/time/cinema/screen isolates reservations.
+Assert booked IDs are sorted, sold-out uses the existing 80-seat configured grid, and changing movie/date/time/cinema/screen isolates reservations.
 
 - [ ] **Step 3: Write failing concurrency tests**
 
@@ -254,7 +254,7 @@ Run focused tests and commit `feat: add authoritative seat availability hook`.
 
 - [ ] **Step 1: Write failing page tests**
 
-Test loading blocks the grid; error shows retry without available seats; booked seats are disabled; live conflicts remove selections with a message; selection caps at 10; all 60 seats booked shows exact sold-out copy and disables progression; focus on derived state without local storage booking history.
+Test loading blocks the grid; error shows retry without available seats; booked seats are disabled; live conflicts remove selections with a message; selection caps at 10; all 80 seats booked shows exact sold-out copy and disables progression; focus on derived state without local storage booking history.
 
 - [ ] **Step 2: Verify red**
 
@@ -262,7 +262,7 @@ Run the focused test and confirm existing fallback/duplicate-state behavior fail
 
 - [ ] **Step 3: Implement derived grid and memoized seat**
 
-Keep only `selectedSeats` locally. Define the 60-seat map once outside the component, turn booked IDs into a memoized `Set`, and derive each seat status during render. Remove `seats`, `bookedSeats`, `selectedSeatsRef`, manual interval, format-comparison helpers, pre-payment `allBookings` writes, and client ticket-history fetches.
+Keep only `selectedSeats` locally. Define the existing 80-seat map once outside the component, turn booked IDs into a memoized `Set`, and derive each seat status during render. Remove `seats`, `bookedSeats`, `selectedSeatsRef`, manual interval, format-comparison helpers, pre-payment `allBookings` writes, and client ticket-history fetches.
 
 - [ ] **Step 4: Verify green and commit**
 
@@ -322,4 +322,3 @@ Document: backup, dry run, maintenance window, apply migration, verify unique in
 - [ ] **Step 5: Review diffs and commit documentation**
 
 Run `git diff --check` and `git status --short` in both repositories, confirm no secrets/build artifacts are staged, then commit README changes as `docs: document seat booking operations`.
-

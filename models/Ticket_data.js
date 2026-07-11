@@ -23,6 +23,8 @@ const ticketSchema = new mongoose.Schema({
     type: String,
     required: true,
   },
+  screen: { type: String, default: "screen 1" },
+  showKey: { type: String, index: true },
   time: {
     type: String,
     required: true,
@@ -48,6 +50,13 @@ const ticketSchema = new mongoose.Schema({
     required: true,
     unique: true,
   },
+  requestFingerprint: { type: String },
+  status: {
+    type: String,
+    enum: ["confirmed", "cancelled", "conflicted"],
+    default: "confirmed",
+  },
+  conflictingSeats: { type: [String], default: [] },
   createdAt: {
     type: Date,
     default: Date.now,

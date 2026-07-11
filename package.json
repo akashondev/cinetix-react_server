@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node app.js",
     "dev": "nodemon app.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "jest --runInBand",
+    "migrate:seats:dry-run": "node scripts/migrate-seat-reservations.js",
+    "migrate:seats": "node scripts/migrate-seat-reservations.js --apply"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",
@@ -15,9 +17,13 @@
     "dotenv": "^16.5.0",
     "express": "^4.21.2",
     "jsonwebtoken": "^9.0.2",
-    "mongoose": "^7.8.7"
+    "mongoose": "^7.8.7",
+    "socket.io": "^4.8.3"
   },
   "devDependencies": {
-    "nodemon": "^2.0.22"
+    "jest": "^30.4.2",
+    "mongodb-memory-server": "^11.2.0",
+    "nodemon": "^2.0.22",
+    "supertest": "^7.2.2"
   }
 }
