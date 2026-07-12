@@ -10,7 +10,6 @@ const jwt = require("jsonwebtoken");
 const User = require("./models/UserModel");
 const Movie = require("./models/movie");
 const Ticket = require("./models/Ticket_data");
-const http = require("http");
 const { Server } = require("socket.io");
 const { createBookingService, SeatConflictError } = require("./services/bookingService");
 const { ValidationError } = require("./services/showIdentity");
@@ -18,10 +17,16 @@ const { ValidationError } = require("./services/showIdentity");
 const app = express();
 const bookingService = createBookingService();
 let io;
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 3000;
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://localhost:3001",
+  "http://localhost:5173",
+  process.env.FRONTEND_URL,
+].filter(Boolean);
 
 // Middleware
-app.use(cors());
+app.use(cors({ origin: allowedOrigins }));
 app.use(express.json());
 app.use(bodyParser.json());
 // app.use("/api/tickets", ticketRoutes);
@@ -55,14 +60,13 @@ async function startServer() {
       console.log("Test user inserted.");
     }
 
-    const server = http.createServer(app);
-    io = new Server(server, { cors: { origin: "*" } });
+    const server = app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+    io = new Server(server, { cors: { origin: allowedOrigins } });
     io.on("connection", (socket) => {
       socket.on("show:join", (showKey) => typeof showKey === "string" && socket.join(showKey));
       socket.on("show:leave", (showKey) => typeof showKey === "string" && socket.leave(showKey));
-    });
-    server.listen(PORT, () => {
-      console.log(`Server running on http://localhost:${PORT}`);
     });
 }
 
@@ -87,7 +91,7 @@ function authenticateToken(req, res, next) {
 
 // Routes
 app.get("/", (req, res) => {
-  res.send("CineTix API is running!");
+  res.json({ status: "ok" });
 });
 
 app.get("/api/movies/:id", async (req, res) => {
