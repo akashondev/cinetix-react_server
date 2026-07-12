@@ -20,13 +20,13 @@ let io;
 const PORT = process.env.PORT || 3000;
 const allowedOrigins = [
   "http://localhost:3000",
-  "http://localhost:3001",
-  "http://localhost:5173",
+  "https://cinetix-react.vercel.app",
   process.env.FRONTEND_URL,
 ].filter(Boolean);
+const corsOptions = { origin: allowedOrigins, credentials: true };
 
 // Middleware
-app.use(cors({ origin: allowedOrigins }));
+app.use(cors(corsOptions));
 app.use(express.json());
 app.use(bodyParser.json());
 // app.use("/api/tickets", ticketRoutes);
@@ -63,7 +63,7 @@ async function startServer() {
     const server = app.listen(PORT, "0.0.0.0", () => {
       console.log(`Server running on port ${PORT}`);
     });
-    io = new Server(server, { cors: { origin: allowedOrigins } });
+    io = new Server(server, { cors: corsOptions });
     io.on("connection", (socket) => {
       socket.on("show:join", (showKey) => typeof showKey === "string" && socket.join(showKey));
       socket.on("show:leave", (showKey) => typeof showKey === "string" && socket.leave(showKey));

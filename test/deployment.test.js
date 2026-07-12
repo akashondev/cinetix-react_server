@@ -1,4 +1,4 @@
-process.env.FRONTEND_URL = "https://cinetix.vercel.app";
+process.env.FRONTEND_URL = "https://cinetix-react.vercel.app";
 
 const request = require("supertest");
 const app = require("../app");
@@ -13,13 +13,12 @@ test("returns JSON from the root health-check route", async () => {
 
 test.each([
   "http://localhost:3000",
-  "http://localhost:3001",
-  "http://localhost:5173",
-  "https://cinetix.vercel.app",
+  "https://cinetix-react.vercel.app",
 ])("allows the configured CORS origin %s", async (origin) => {
   const response = await request(app).get("/").set("Origin", origin);
 
   expect(response.headers["access-control-allow-origin"]).toBe(origin);
+  expect(response.headers["access-control-allow-credentials"]).toBe("true");
 });
 
 test("does not allow an unconfigured CORS origin", async () => {
