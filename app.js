@@ -1,4 +1,6 @@
-require("dotenv").config();
+if (process.env.NODE_ENV !== "production") {
+  require("dotenv").config();
+}
 const express = require("express");
 const mongoose = require("mongoose");
 const bodyParser = require("body-parser");
@@ -16,6 +18,7 @@ const { ValidationError } = require("./services/showIdentity");
 const app = express();
 const bookingService = createBookingService();
 let io;
+const PORT = process.env.PORT || 5000;
 
 // Middleware
 app.use(cors());
@@ -24,7 +27,12 @@ app.use(bodyParser.json());
 // app.use("/api/tickets", ticketRoutes);
 
 async function startServer() {
-  await mongoose.connect(process.env.MONGO_URI, {
+  const mongoUri = process.env.MONGO_URI;
+  if (!mongoUri || typeof mongoUri !== "string" || !mongoUri.trim()) {
+    throw new Error("Missing required environment variable: MONGO_URI");
+  }
+
+  await mongoose.connect(mongoUri, {
     dbName: process.env.MONGO_DB_NAME,
     serverSelectionTimeoutMS: 43200000,
     socketTimeoutMS: 43200000,
@@ -53,9 +61,8 @@ async function startServer() {
       socket.on("show:join", (showKey) => typeof showKey === "string" && socket.join(showKey));
       socket.on("show:leave", (showKey) => typeof showKey === "string" && socket.leave(showKey));
     });
-    const port = Number(process.env.PORT) || 3000;
-    server.listen(port, () => {
-      console.log(`Server running on http://localhost:${port}`);
+    server.listen(PORT, () => {
+      console.log(`Server running on http://localhost:${PORT}`);
     });
 }
 
