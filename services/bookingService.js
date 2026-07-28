@@ -21,8 +21,12 @@ function fingerprint(userId, show, seats, sessionId) {
 function createBookingService({ TicketModel = Ticket, ReservationModel = SeatReservation, startSession = () => mongoose.startSession() } = {}) {
   async function getAvailability(identity) {
     const show = normalizeShowIdentity(identity);
-    const reservations = await ReservationModel.find({ showKey: show.showKey }).lean();
-    const bookedSeats = [...new Set(reservations.map(({ seat }) => seat))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    const reservedSeats = await ReservationModel.distinct("seat", {
+      showKey: show.showKey,
+    });
+    const bookedSeats = [...new Set(reservedSeats)].sort((a, b) =>
+      a.localeCompare(b, undefined, { numeric: true })
+    );
     return {
       show,
       bookedSeats,

@@ -283,10 +283,11 @@ app.post("/api/tickets", authenticateToken, async (req, res) => {
 
 app.get("/api/tickets", authenticateToken, async (req, res) => {
   try {
-    console.log("running");
     const ticket = await Ticket.find({
       user: req.user.id,
-    }).populate("movie_id");
+    })
+      .sort({ createdAt: -1 })
+      .lean();
 
     if (!ticket) {
       return res.status(404).json({

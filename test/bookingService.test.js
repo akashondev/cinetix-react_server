@@ -1,5 +1,8 @@
 jest.mock("../models/Ticket_data", () => ({ findOne: jest.fn() }));
-jest.mock("../models/SeatReservation", () => ({ find: jest.fn() }));
+jest.mock("../models/SeatReservation", () => ({
+  distinct: jest.fn(),
+  insertMany: jest.fn(),
+}));
 
 const Ticket = require("../models/Ticket_data");
 const SeatReservation = require("../models/SeatReservation");
@@ -10,11 +13,11 @@ const identity = {
   date: "2026-07-11", time: "7:30 PM",
 };
 
-test("availability is show scoped and detects sold out", async () => {
-  SeatReservation.find.mockReturnValue({ lean: jest.fn().mockResolvedValue([{ seat: "A1" }, { seat: "A2" }]) });
+test("availability reads only distinct seats for one indexed show", async () => {
+  SeatReservation.distinct.mockResolvedValue(["A2", "A1", "A2"]);
   const service = createBookingService({ TicketModel: Ticket, ReservationModel: SeatReservation });
   const result = await service.getAvailability(identity);
-  expect(SeatReservation.find).toHaveBeenCalledWith({ showKey: result.show.showKey });
+  expect(SeatReservation.distinct).toHaveBeenCalledWith("seat", { showKey: result.show.showKey });
   expect(result.bookedSeats).toEqual(["A1", "A2"]);
   expect(result.availableCount).toBe(78);
   expect(result.soldOut).toBe(false);
@@ -24,7 +27,7 @@ test("maps a duplicate reservation to a seat conflict", async () => {
   const duplicate = Object.assign(new Error("duplicate"), { code: 11000 });
   const session = { withTransaction: jest.fn().mockRejectedValue(duplicate), endSession: jest.fn() };
   const ReservationModel = {
-    find: jest.fn().mockReturnValue({ lean: jest.fn().mockResolvedValue([{ seat: "A1" }]) }),
+    distinct: jest.fn().mockResolvedValue(["A1"]),
   };
   const service = createBookingService({
     TicketModel: { findOne: jest.fn().mockReturnValue({ lean: jest.fn().mockResolvedValue(null) }) },
