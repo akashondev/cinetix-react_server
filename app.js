@@ -13,6 +13,11 @@ const Ticket = require("./models/Ticket_data");
 const { Server } = require("socket.io");
 const { createBookingService, SeatConflictError } = require("./services/bookingService");
 const { ValidationError } = require("./services/showIdentity");
+const {
+  createSession,
+  refreshSession,
+  revokeSession,
+} = require("./services/userSessionService");
 // const ticketRoutes = require("./routes/Ticket");
 const app = express();
 const bookingService = createBookingService();
@@ -164,15 +169,12 @@ app.post("/api/users/login", async (req, res) => {
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
-    const token = jwt.sign(
-      { id: user._id, email: user.email },
-      process.env.JWT_SECRET,
-      { expiresIn: "1h" }
-    );
+    const { token, refreshToken } = await createSession(user);
 
     res.status(200).json({
       message: "Login successful",
       token,
+      refreshToken,
       userId: user._id,
       name: user.name,
       email: user.email,
@@ -180,6 +182,29 @@ app.post("/api/users/login", async (req, res) => {
   } catch (error) {
     console.error("Login error:", error);
     res.status(500).json({ message: "Server error during login" });
+  }
+});
+
+app.post("/api/users/session/refresh", async (req, res) => {
+  try {
+    const refreshed = await refreshSession(req.body.refreshToken);
+    if (!refreshed) {
+      return res.status(401).json({ message: "Invalid refresh session" });
+    }
+    res.json(refreshed);
+  } catch (error) {
+    console.error("Session refresh error:", error);
+    res.status(500).json({ message: "Unable to refresh session" });
+  }
+});
+
+app.post("/api/users/session/logout", async (req, res) => {
+  try {
+    await revokeSession(req.body.refreshToken);
+    res.status(204).end();
+  } catch (error) {
+    console.error("Session logout error:", error);
+    res.status(500).json({ message: "Unable to end session" });
   }
 });
 
