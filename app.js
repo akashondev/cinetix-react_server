@@ -18,6 +18,10 @@ const {
   refreshSession,
   revokeSession,
 } = require("./services/userSessionService");
+const {
+  isShowExpired,
+  ticketVisibilityFilter,
+} = require("./services/ticketLifecycle");
 // const ticketRoutes = require("./routes/Ticket");
 const app = express();
 const bookingService = createBookingService();
@@ -308,9 +312,7 @@ app.post("/api/tickets", authenticateToken, async (req, res) => {
 
 app.get("/api/tickets", authenticateToken, async (req, res) => {
   try {
-    const ticket = await Ticket.find({
-      user: req.user.id,
-    })
+    const ticket = await Ticket.find(ticketVisibilityFilter(req.user.id))
       .sort({ createdAt: -1 })
       .lean();
 
@@ -330,6 +332,51 @@ app.get("/api/tickets", authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Failed to fetch ticket",
+    });
+  }
+});
+
+app.delete("/api/tickets/:id/history", authenticateToken, async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid ticket ID",
+      });
+    }
+
+    const ticket = await Ticket.findOne({
+      _id: req.params.id,
+      user: req.user.id,
+    });
+    if (!ticket) {
+      return res.status(404).json({
+        success: false,
+        message: "Ticket not found or unauthorized",
+      });
+    }
+    if (!isShowExpired(ticket)) {
+      return res.status(409).json({
+        success: false,
+        message: "Ticket can only be removed after the showtime",
+      });
+    }
+
+    const hiddenTicket = await Ticket.findOneAndUpdate(
+      { _id: req.params.id, user: req.user.id },
+      { $set: { hiddenByUserAt: new Date() } },
+      { new: true }
+    );
+    res.json({
+      success: true,
+      data: hiddenTicket,
+      message: "Expired ticket removed",
+    });
+  } catch (error) {
+    console.error("Error removing expired ticket:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to remove expired ticket",
     });
   }
 });

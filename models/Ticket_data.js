@@ -57,6 +57,10 @@ const ticketSchema = new mongoose.Schema({
     default: "confirmed",
   },
   conflictingSeats: { type: [String], default: [] },
+  hiddenByUserAt: {
+    type: Date,
+    default: null,
+  },
   createdAt: {
     type: Date,
     default: Date.now,
