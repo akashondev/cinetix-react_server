@@ -132,3 +132,20 @@ test("public movie listing caps TMDB now showing at fifteen without removing man
   expect(response.body.filter((movie) => movie.source === "tmdb")).toHaveLength(15);
   expect(response.body.find((movie) => movie.source === "manual")).toBeDefined();
 });
+
+test("public movie listing honors explicit display order before capping now showing", async () => {
+  mockFind.mockResolvedValue([
+    { _id: "tmdb-0", title: "First", source: "tmdb", category: "nowShowing", isActive: true, releaseDate: "2020-01-01" },
+    { _id: "tmdb-1", title: "Second", source: "tmdb", category: "nowShowing", isActive: true, releaseDate: "2020-01-01" },
+    { _id: "tmdb-2", title: "Resident Evil", source: "tmdb", category: "nowShowing", isActive: true, releaseDate: "2020-01-01", displayOrder: 2 },
+  ]);
+
+  const response = await request(app).get("/api/movies");
+
+  expect(response.status).toBe(200);
+  expect(response.body.map((movie) => movie.title)).toEqual([
+    "First",
+    "Resident Evil",
+    "Second",
+  ]);
+});

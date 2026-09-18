@@ -102,6 +102,29 @@ function capPublicTmdbNowShowing(movies) {
   });
 }
 
+function applyDisplayOrder(movies) {
+  const ordered = [...movies];
+  const pinned = ordered
+    .map((movie, index) => ({ movie, index }))
+    .filter(({ movie }) => Number.isInteger(Number(movie.displayOrder)) && Number(movie.displayOrder) > 0)
+    .sort(
+      (left, right) =>
+        Number(left.movie.displayOrder) - Number(right.movie.displayOrder) ||
+        left.index - right.index
+    );
+
+  for (const { movie } of pinned) {
+    const currentIndex = ordered.findIndex(
+      (candidate) => String(candidate._id) === String(movie._id)
+    );
+    if (currentIndex === -1) continue;
+    const [item] = ordered.splice(currentIndex, 1);
+    ordered.splice(Math.min(Number(item.displayOrder) - 1, ordered.length), 0, item);
+  }
+
+  return ordered;
+}
+
 // Middleware
 app.use(cors(corsOptions));
 app.use(express.json());
@@ -308,7 +331,11 @@ app.get("/api/movies", async (req, res) => {
       req.query.includeInactive === "true"
         ? movies
         : movies.filter((movie) => !isStaleComingSoonMovie(movie));
-    res.json(req.query.includeInactive === "true" ? visibleMovies : capPublicTmdbNowShowing(visibleMovies));
+    res.json(
+      req.query.includeInactive === "true"
+        ? visibleMovies
+        : capPublicTmdbNowShowing(applyDisplayOrder(visibleMovies))
+    );
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
