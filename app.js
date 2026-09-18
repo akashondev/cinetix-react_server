@@ -22,6 +22,10 @@ const {
   isShowExpired,
   ticketVisibilityFilter,
 } = require("./services/ticketLifecycle");
+const {
+  DAY_MS,
+  synchronizeTmdbMovies,
+} = require("./services/tmdbSyncService");
 // const ticketRoutes = require("./routes/Ticket");
 const app = express();
 const bookingService = createBookingService();
@@ -44,6 +48,60 @@ const corsOptions = {
   allowedHeaders: ["Content-Type", "Authorization"],
 };
 
+async function syncTmdbCatalog(options = {}) {
+  try {
+    const result = await synchronizeTmdbMovies(options);
+    if (!result.skipped) console.log("TMDB movie synchronization complete", result);
+    return result;
+  } catch (error) {
+    console.error("TMDB movie synchronization failed; existing data preserved:", error.message);
+    return { skipped: false, failed: true, error: error.message };
+  }
+}
+
+function manualMoviePayload(body, { isCreate = false } = {}) {
+  const payload = { ...body };
+  if (isCreate || "posterUrl" in body || "banner" in body) {
+    payload.posterUrl = body.posterUrl || body.banner || "";
+  }
+  if (
+    isCreate ||
+    "heroImageUrl" in body ||
+    "image" in body
+  ) {
+    payload.heroImageUrl =
+      body.heroImageUrl ||
+      body.image ||
+      (isCreate ? body.posterUrl || body.banner : "") ||
+      "";
+  }
+  delete payload.image;
+  delete payload.banner;
+  delete payload.tmdbId;
+  delete payload.originGroup;
+  delete payload.nowShowingSince;
+  delete payload.source;
+  delete payload.isActive;
+  if (isCreate) payload.source = "manual";
+  return payload;
+}
+
+function isStaleComingSoonMovie(movie) {
+  if (movie?.category !== "comingSoon" || !movie.releaseDate) return false;
+  const releaseDate = new Date(movie.releaseDate);
+  return !Number.isNaN(releaseDate.getTime()) && releaseDate <= new Date();
+}
+
+function capPublicTmdbNowShowing(movies) {
+  let tmdbNowShowingCount = 0;
+  return movies.filter((movie) => {
+    if (movie.source !== "tmdb" || movie.category !== "nowShowing") return true;
+    if (tmdbNowShowingCount >= 15) return false;
+    tmdbNowShowingCount += 1;
+    return true;
+  });
+}
+
 // Middleware
 app.use(cors(corsOptions));
 app.use(express.json());
@@ -62,6 +120,8 @@ async function startServer() {
     socketTimeoutMS: 43200000,
   });
     console.log("MongoDB connected");
+
+    await syncTmdbCatalog();
 
     // Create test user if not exists
     const existingUser = await User.findOne({ email: "test@example.com" });
@@ -82,6 +142,9 @@ async function startServer() {
     const server = app.listen(PORT, "0.0.0.0", () => {
       console.log(`Server running on port ${PORT}`);
     });
+    const tmdbSyncInterval = setInterval(syncTmdbCatalog, DAY_MS);
+    tmdbSyncInterval.unref?.();
+    server.on("close", () => clearInterval(tmdbSyncInterval));
     io = new Server(server, { cors: corsOptions });
     io.on("connection", (socket) => {
       socket.on("show:join", (showKey) => typeof showKey === "string" && socket.join(showKey));
@@ -236,8 +299,16 @@ app.get("/api/users/:id", async (req, res) => {
 // Movie Routes
 app.get("/api/movies", async (req, res) => {
   try {
-    const movies = await Movie.find();
-    res.json(movies);
+    const filter =
+      req.query.includeInactive === "true"
+        ? {}
+        : { $or: [{ source: { $ne: "tmdb" } }, { isActive: true }] };
+    const movies = await Movie.find(filter);
+    const visibleMovies =
+      req.query.includeInactive === "true"
+        ? movies
+        : movies.filter((movie) => !isStaleComingSoonMovie(movie));
+    res.json(req.query.includeInactive === "true" ? visibleMovies : capPublicTmdbNowShowing(visibleMovies));
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -257,7 +328,7 @@ app.get("/api/movies/:id", async (req, res) => {
 
 app.post("/api/movies", async (req, res) => {
   try {
-    const movie = new Movie(req.body);
+    const movie = new Movie(manualMoviePayload(req.body, { isCreate: true }));
     const newMovie = await movie.save();
     res.status(201).json(newMovie);
   } catch (err) {
@@ -269,7 +340,7 @@ app.put("/api/movies/:id", async (req, res) => {
   try {
     const updatedMovie = await Movie.findByIdAndUpdate(
       req.params.id,
-      req.body,
+      manualMoviePayload(req.body),
       { new: true }
     );
     res.json(updatedMovie);
@@ -280,8 +351,13 @@ app.put("/api/movies/:id", async (req, res) => {
 
 app.delete("/api/movies/:id", async (req, res) => {
   try {
-    await Movie.findByIdAndDelete(req.params.id);
-    res.json({ message: "Movie deleted" });
+    const movie = await Movie.findById(req.params.id);
+    if (!movie) return res.status(404).json({ message: "Movie not found" });
+    await Movie.deleteOne({ _id: movie._id });
+    const sync = await syncTmdbCatalog({
+      excludeTmdbIds: movie.tmdbId ? [movie.tmdbId] : [],
+    });
+    res.json({ message: "Movie deleted", sync });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
