@@ -7,6 +7,8 @@
     "start": "node app.js",
     "dev": "nodemon app.js",
     "test": "jest --runInBand",
+    "migrate:certificates:dry-run": "node scripts/remove-movie-certificates.js",
+    "migrate:certificates": "node scripts/remove-movie-certificates.js --apply",
     "migrate:seats:dry-run": "node scripts/migrate-seat-reservations.js",
     "migrate:seats": "node scripts/migrate-seat-reservations.js --apply"
   },
