@@ -24,8 +24,12 @@ const {
 } = require("./services/ticketLifecycle");
 const {
   DAY_MS,
+  dateKey,
+  getIndianMarketDate,
+  isDuplicateMovie,
   synchronizeTmdbMovies,
 } = require("./services/tmdbSyncService");
+
 // const ticketRoutes = require("./routes/Ticket");
 const app = express();
 const bookingService = createBookingService();
@@ -165,6 +169,21 @@ async function startServer() {
     const server = app.listen(PORT, "0.0.0.0", () => {
       console.log(`Server running on port ${PORT}`);
     });
+    server.on("error", (error) => {
+      if (error.code === "EADDRINUSE") {
+        console.error(`[Error] Port ${PORT} is already in use by another process.`);
+        console.error(`Please stop the other process or set a different PORT in .env.`);
+      } else {
+        console.error("Server error:", error);
+      }
+      process.exit(1);
+    });
+    process.once("SIGUSR2", () => {
+      server.close(() => {
+        process.kill(process.pid, "SIGUSR2");
+      });
+    });
+
     const tmdbSyncInterval = setInterval(syncTmdbCatalog, DAY_MS);
     tmdbSyncInterval.unref?.();
     server.on("close", () => clearInterval(tmdbSyncInterval));
@@ -319,22 +338,119 @@ app.get("/api/users/:id", async (req, res) => {
   }
 });
 
-// Movie Routes
+// Movie Routes (Managed)
+let lastSyncTimestamp = 0;
+let isSyncInProgress = false;
+
+async function checkAndSyncCatalog(force = false) {
+  if (isSyncInProgress) return;
+  const TWELVE_HOURS = 12 * 60 * 60 * 1000;
+  const timeSinceLastSync = Date.now() - lastSyncTimestamp;
+
+  const nowCount = await Movie.countDocuments({ category: "nowShowing", isActive: true });
+  const comingCount = await Movie.countDocuments({ category: "comingSoon", isActive: true });
+
+  const needsSync = force || nowCount < 15 || comingCount < 10 || timeSinceLastSync > TWELVE_HOURS;
+  if (!needsSync) return;
+
+  isSyncInProgress = true;
+  try {
+    const result = await syncTmdbCatalog();
+    lastSyncTimestamp = Date.now();
+    return result;
+  } finally {
+    isSyncInProgress = false;
+  }
+}
+
+function safeDateKey(value = new Date()) {
+  if (typeof dateKey === "function") return dateKey(value);
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString().slice(0, 10);
+}
+
+function deduplicateMovieList(movies) {
+  if (!Array.isArray(movies)) return [];
+  if (typeof isDuplicateMovie !== "function") return movies;
+  const result = [];
+  for (const movie of movies) {
+    const isDupe = result.some((existing) => isDuplicateMovie(movie, existing));
+    if (!isDupe) {
+      result.push(movie);
+    }
+  }
+  return result;
+}
+
 app.get("/api/movies", async (req, res) => {
   try {
+    const today = safeDateKey(new Date());
+
     const filter =
       req.query.includeInactive === "true"
         ? {}
         : { $or: [{ source: { $ne: "tmdb" } }, { isActive: true }] };
     const movies = await Movie.find(filter);
+
+    if (!Array.isArray(movies)) {
+      return res.json([]);
+    }
+
+    const tmdbDue = movies.filter(
+      (m) =>
+        m &&
+        m.source === "tmdb" &&
+        m.category === "comingSoon" &&
+        m.releaseDate &&
+        String(m.releaseDate).slice(0, 10) <= today
+    );
+    if (tmdbDue.length > 0 && typeof Movie.updateMany === "function") {
+      Movie.updateMany(
+        { _id: { $in: tmdbDue.map((m) => m._id) } },
+        { $set: { category: "nowShowing", nowShowingSince: new Date() } }
+      ).catch((err) => console.error("Promotion update error:", err.message));
+    }
+
+    if (typeof Movie.countDocuments === "function") {
+      const activeComingSoon = movies.filter(
+        (m) => m.category === "comingSoon" && m.releaseDate > today
+      );
+      if (activeComingSoon.length < 10 || movies.length === 0) {
+        checkAndSyncCatalog().catch((err) =>
+          console.error("Auto catalog sync error:", err.message)
+        );
+      }
+    }
+
     const visibleMovies =
       req.query.includeInactive === "true"
         ? movies
-        : movies.filter((movie) => !isStaleComingSoonMovie(movie));
+        : movies
+            .filter((movie) => {
+              if (movie.source !== "tmdb" && isStaleComingSoonMovie(movie)) {
+                return false;
+              }
+              return true;
+            })
+            .map((movie) => {
+              const obj = movie.toObject ? movie.toObject() : { ...movie };
+              if (
+                obj.category === "comingSoon" &&
+                obj.source === "tmdb" &&
+                obj.releaseDate &&
+                String(obj.releaseDate).slice(0, 10) <= today
+              ) {
+                obj.category = "nowShowing";
+              }
+              return obj;
+            });
+
+    const dedupedMovies = deduplicateMovieList(visibleMovies);
+
     res.json(
       req.query.includeInactive === "true"
-        ? visibleMovies
-        : capPublicTmdbNowShowing(applyDisplayOrder(visibleMovies))
+        ? dedupedMovies
+        : capPublicTmdbNowShowing(applyDisplayOrder(dedupedMovies))
     );
   } catch (err) {
     res.status(500).json({ message: err.message });

@@ -64,14 +64,14 @@ test("imports a same-day high-popularity TMDB replacement when Now Showing is fu
     tmdbId: index + 1,
     source: "tmdb",
     category: "nowShowing",
-    originGroup: index < 8 ? "indian" : "international",
+    originGroup: index < 10 ? "indian" : "international",
     releaseDate: "2026-09-17",
     nowShowingSince: new Date("2026-09-17T00:00:00.000Z"),
   }));
   const writes = [];
   const deleted = [];
   const detailFor = (id) => ({
-    ...candidate(id, id <= 8 ? "IN" : "US", {
+    ...candidate(id, id <= 10 ? "IN" : "US", {
       title: id === 9999 ? "Resident Evil (2026)" : `Existing ${id}`,
       release_date: id === 9999 ? "2026-09-18" : "2026-09-17",
       popularity: id === 1 ? 1 : 10,
@@ -107,7 +107,7 @@ test("imports a same-day high-popularity TMDB replacement when Now Showing is fu
   )).toBe(true);
 });
 
-test("fills exactly eight Indian and seven international Now Showing plus five each Coming Soon", async () => {
+test("fills exactly ten Indian and five international Now Showing plus five each Coming Soon", async () => {
   const { synchronizeTmdbMovies } = loadService();
   const writes = [];
   const makeDetails = (id, origin, releaseDate, popularity) => ({
@@ -118,7 +118,7 @@ test("fills exactly eight Indian and seven international Now Showing plus five e
     videos: { results: [] },
   });
   const nowPool = [
-    ...Array.from({ length: 10 }, (_, index) => candidate(index + 1, "IN", { release_date: "2026-09-18", popularity: 100 - index })),
+    ...Array.from({ length: 12 }, (_, index) => candidate(index + 1, "IN", { release_date: "2026-09-18", popularity: 100 - index })),
     ...Array.from({ length: 10 }, (_, index) => candidate(index + 101, "US", { release_date: "2026-09-18", popularity: 100 - index })),
   ];
   const comingPool = [
@@ -144,8 +144,8 @@ test("fills exactly eight Indian and seven international Now Showing plus five e
   });
 
   const documents = writes.flat().map((operation) => operation.updateOne?.update?.$setOnInsert).filter(Boolean);
-  expect(documents.filter((document) => document.category === "nowShowing" && document.originGroup === "indian")).toHaveLength(8);
-  expect(documents.filter((document) => document.category === "nowShowing" && document.originGroup === "international")).toHaveLength(7);
+  expect(documents.filter((document) => document.category === "nowShowing" && document.originGroup === "indian")).toHaveLength(10);
+  expect(documents.filter((document) => document.category === "nowShowing" && document.originGroup === "international")).toHaveLength(5);
   expect(documents.filter((document) => document.category === "comingSoon" && document.originGroup === "indian")).toHaveLength(5);
   expect(documents.filter((document) => document.category === "comingSoon" && document.originGroup === "international")).toHaveLength(5);
 });
@@ -379,9 +379,9 @@ test("isolates a withdrawn TMDB record instead of aborting synchronization", asy
   });
 });
 
-test("keeps eight Indian retained TMDB movies active for the fifteen-title now showing catalog", async () => {
+test("keeps ten Indian retained TMDB movies active for the fifteen-title now showing catalog", async () => {
   const { synchronizeTmdbMovies } = loadService();
-  const existing = Array.from({ length: 10 }, (_, index) => ({
+  const existing = Array.from({ length: 12 }, (_, index) => ({
     _id: `movie-${index + 1}`,
     tmdbId: index + 1,
     source: "tmdb",
@@ -418,10 +418,10 @@ test("keeps eight Indian retained TMDB movies active for the fifteen-title now s
     .flat()
     .map((operation) => operation.updateOne?.update?.$set?.isActive)
     .filter((value) => typeof value === "boolean");
-  expect(activeValues.filter(Boolean)).toHaveLength(8);
+  expect(activeValues.filter(Boolean)).toHaveLength(10);
   expect(activeValues.filter((value) => !value)).toHaveLength(0);
   expect(MovieModel.deleteMany).toHaveBeenCalledWith({
-    _id: { $in: ["movie-9", "movie-10"] },
+    _id: { $in: ["movie-11", "movie-12"] },
     source: "tmdb",
   });
 });
@@ -433,7 +433,7 @@ test("removes surplus TMDB now showing records without a blocked list", async ()
     tmdbId: index + 1,
     source: "tmdb",
     category: "nowShowing",
-    originGroup: index < 8 ? "indian" : "international",
+    originGroup: index < 10 ? "indian" : "international",
     releaseDate: "2026-09-10",
     nowShowingSince: new Date(`2026-09-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`),
   }));
@@ -450,7 +450,7 @@ test("removes surplus TMDB now showing records without a blocked list", async ()
       fetchNowPlaying: async () => [],
       fetchComingSoon: async () => [],
       fetchDetails: async (id) => ({
-        ...candidate(id, id <= 8 ? "IN" : "US"),
+        ...candidate(id, id <= 10 ? "IN" : "US"),
         runtime: 120,
         genres: [],
         credits: { crew: [], cast: [] },
@@ -506,3 +506,47 @@ test("marks Indian discover candidates with origin country IN", async () => {
 
   expect(movies.every((movie) => movie.origin_country.includes("IN"))).toBe(true);
 });
+
+test("detects Drishyam subtitle variations as duplicates while preserving distinct releases", () => {
+  const { isDuplicateMovie, areDuplicateTitles } = loadService();
+
+  expect(
+    areDuplicateTitles("Drishyam: The Conclusion", "Drishyam 3: The Conclusion")
+  ).toBe(true);
+
+  expect(
+    isDuplicateMovie(
+      { title: "Drishyam: The Conclusion", releaseDate: "2026-10-02" },
+      { title: "Drishyam 3: The Conclusion", releaseDate: "2022-11-18" }
+    )
+  ).toBe(true);
+
+  expect(
+    areDuplicateTitles("Drishyam", "Drishyam 2")
+  ).toBe(false);
+
+  expect(
+    isDuplicateMovie(
+      { tmdbId: 101, title: "Drishyam", releaseDate: "2015-07-31" },
+      { tmdbId: 102, title: "Drishyam 2", releaseDate: "2022-11-18" }
+    )
+  ).toBe(false);
+});
+
+test("supports TMDB_API_KEY when read access token is omitted", async () => {
+  const { createTmdbClient } = loadService();
+  let requestedUrl;
+  const client = createTmdbClient({
+    token: null,
+    apiKey: "test-api-key",
+    fetchImpl: async (url) => {
+      requestedUrl = new URL(url);
+      return { ok: true, json: async () => ({ results: [] }) };
+    },
+  });
+
+  expect(client).not.toBeNull();
+  await client.fetchNowShowing({ today: "2026-09-18" });
+  expect(requestedUrl.searchParams.get("api_key")).toBe("test-api-key");
+});
+

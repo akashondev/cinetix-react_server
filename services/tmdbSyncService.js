@@ -4,7 +4,7 @@ const TMDB_BASE_URL = "https://api.themoviedb.org/3";
 const POSTER_BASE_URL = "https://image.tmdb.org/t/p/w780";
 const HERO_BASE_URL = "https://image.tmdb.org/t/p/w1280";
 const DAY_MS = 24 * 60 * 60 * 1000;
-const NOW_SHOWING_TARGETS = { indian: 8, international: 7 };
+const NOW_SHOWING_TARGETS = { indian: 10, international: 5 };
 const COMING_SOON_PER_GROUP = 5;
 
 function marketDateParts(value) {
@@ -23,9 +23,13 @@ function marketDateParts(value) {
   );
 }
 
-function dateKey(value) {
+function dateKey(value = new Date()) {
   const parts = marketDateParts(value);
   return parts ? `${parts.year}-${parts.month}-${parts.day}` : "";
+}
+
+function getIndianMarketDate(value = new Date()) {
+  return dateKey(value);
 }
 
 function comingSoonWindow(now = new Date()) {
@@ -44,20 +48,97 @@ function comingSoonWindow(now = new Date()) {
 }
 
 function originGroupFor(movie) {
-  return Array.isArray(movie?.origin_country) && movie.origin_country.includes("IN")
-    ? "indian"
-    : "international";
+  if (Array.isArray(movie?.origin_country) && movie.origin_country.includes("IN")) {
+    return "indian";
+  }
+  if (movie?.original_language === "hi") {
+    return "indian";
+  }
+  return "international";
 }
 
 function isEligibleMovie(movie) {
   return Boolean(
     movie &&
       movie.adult !== true &&
-      movie.id &&
+      (movie.id || movie.tmdbId) &&
       String(movie.title || "").trim() &&
-      /^\d{4}-\d{2}-\d{2}$/.test(String(movie.release_date || "")) &&
-      movie.poster_path
+      /^\d{4}-\d{2}-\d{2}$/.test(String(movie.release_date || movie.releaseDate || "")) &&
+      (movie.poster_path || movie.posterUrl)
   );
+}
+
+function extractTitleFingerprint(title = "") {
+  const clean = String(title || "")
+    .toLowerCase()
+    .replace(/['’]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+
+  const parts = String(title || "")
+    .toLowerCase()
+    .split(/[:\-–—]|(?:\bpart\b|\bchapter\b)/i);
+  const mainPart = parts[0]?.replace(/[^a-z0-9]+/g, " ").trim() || clean;
+  const subPart = parts.slice(1).join(" ").replace(/[^a-z0-9]+/g, " ").trim();
+
+  const rootPart = mainPart
+    .replace(/\b(1|2|3|4|5|6|7|8|9|10|i|ii|iii|iv|v|vi|vii|viii|ix|x)\b$/g, "")
+    .trim();
+
+  return { clean, mainPart, subPart, rootPart };
+}
+
+function areDuplicateTitles(titleA, titleB) {
+  if (!titleA || !titleB) return false;
+  const fA = extractTitleFingerprint(titleA);
+  const fB = extractTitleFingerprint(titleB);
+
+  if (fA.clean === fB.clean) return true;
+
+  if (
+    fA.rootPart &&
+    fA.rootPart === fB.rootPart &&
+    fA.subPart &&
+    fB.subPart &&
+    (fA.subPart === fB.subPart ||
+      fA.subPart.includes(fB.subPart) ||
+      fB.subPart.includes(fA.subPart))
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function isDuplicateMovie(candidate, existing) {
+  if (!candidate || !existing) return false;
+
+  const idA = candidate.tmdbId || candidate.id;
+  const idB = existing.tmdbId || existing.id;
+  if (idA && idB && Number(idA) === Number(idB)) return true;
+
+  const posterA = candidate.posterUrl || (candidate.poster_path ? `${POSTER_BASE_URL}${candidate.poster_path}` : "");
+  const posterB = existing.posterUrl || (existing.poster_path ? `${POSTER_BASE_URL}${existing.poster_path}` : "");
+  if (posterA && posterB && posterA === posterB) return true;
+
+  const titleA = candidate.title || "";
+  const titleB = existing.title || "";
+  if (areDuplicateTitles(titleA, titleB)) {
+    const hasSubtitle =
+      /conclusion|chapter|part\s*3/i.test(titleA) &&
+      /conclusion|chapter|part\s*3/i.test(titleB);
+    if (hasSubtitle) return true;
+
+    const dateA = String(candidate.releaseDate || candidate.release_date || "").slice(0, 4);
+    const dateB = String(existing.releaseDate || existing.release_date || "").slice(0, 4);
+    const yearA = parseInt(dateA, 10);
+    const yearB = parseInt(dateB, 10);
+    if (!Number.isNaN(yearA) && !Number.isNaN(yearB) && Math.abs(yearA - yearB) <= 1) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function selectByOrigin(
@@ -112,9 +193,15 @@ function formatDuration(runtime) {
 }
 
 function compareByReleaseAndPopularity(left, right) {
-  const releaseOrder = String(right.release_date || "").localeCompare(String(left.release_date || ""));
-  if (releaseOrder) return releaseOrder;
-  return Number(right.popularity || 0) - Number(left.popularity || 0);
+  const popDiff = Number(right.popularity || 0) - Number(left.popularity || 0);
+  if (popDiff) return popDiff;
+  return String(right.release_date || "").localeCompare(String(left.release_date || ""));
+}
+
+function compareByPopularity(left, right) {
+  const popDiff = Number(right.popularity || 0) - Number(left.popularity || 0);
+  if (popDiff) return popDiff;
+  return String(left.release_date || "").localeCompare(String(right.release_date || ""));
 }
 
 function buildMovieDocument(
@@ -132,31 +219,38 @@ function buildMovieDocument(
   ) || movie.videos?.results?.find(
     (video) => video.site === "YouTube" && video.type === "Trailer"
   );
-  const releaseDate = String(movie.release_date);
+  const releaseDate = String(movie.release_date || movie.releaseDate);
+
+  const posterPath = details?.poster_path || summary?.poster_path;
+  const backdropPath = details?.backdrop_path || summary?.backdrop_path;
 
   return {
-    tmdbId: movie.id,
+    tmdbId: movie.id || movie.tmdbId,
     source: "tmdb",
     title: movie.title,
-    posterUrl: `${POSTER_BASE_URL}${movie.poster_path}`,
-    heroImageUrl: movie.backdrop_path
-      ? `${HERO_BASE_URL}${movie.backdrop_path}`
-      : `${POSTER_BASE_URL}${movie.poster_path}`,
-    rating: roundTmdbRating(movie.vote_average),
+    posterUrl: posterPath ? `${POSTER_BASE_URL}${posterPath}` : (movie.posterUrl || ""),
+    heroImageUrl: backdropPath
+      ? `${HERO_BASE_URL}${backdropPath}`
+      : posterPath
+      ? `${POSTER_BASE_URL}${posterPath}`
+      : (movie.heroImageUrl || ""),
+    rating: roundTmdbRating(movie.vote_average ?? movie.rating),
     popularity: Number.isFinite(Number(movie.popularity)) ? Number(movie.popularity) : 0,
     duration: formatDuration(movie.runtime),
     genres: Array.isArray(movie.genres)
-      ? movie.genres.map((genre) => genre.name).filter(Boolean)
+      ? movie.genres.map((genre) => (typeof genre === "string" ? genre : genre.name)).filter(Boolean)
       : [],
     releaseDate,
-    director: director?.name || "TBD",
+    director: director?.name || movie.director || "TBD",
     cast: Array.isArray(movie.credits?.cast)
       ? movie.credits.cast.slice(0, 5).map((person) => person.name).filter(Boolean)
+      : Array.isArray(movie.cast)
+      ? movie.cast.slice(0, 5)
       : [],
-    description: movie.overview || "Description unavailable.",
+    description: movie.overview || movie.description || "Description unavailable.",
     trailerUrl: trailer
       ? `https://www.youtube.com/watch?v=${trailer.key}`
-      : "",
+      : movie.trailerUrl || "",
     category,
     originGroup,
     nowShowingSince: category === "nowShowing" ? now : null,
@@ -195,89 +289,148 @@ function planLifecycle(movies, now = new Date()) {
 
 function createTmdbClient({
   token = process.env.TMDB_API_READ_ACCESS_TOKEN,
+  apiKey = process.env.TMDB_API_KEY,
   fetchImpl = global.fetch,
   timeoutMs = 15000,
 } = {}) {
-  if (!token) return null;
+  if (!token && !apiKey) return null;
   if (typeof fetchImpl !== "function") {
     throw new Error("A fetch implementation is required for TMDB synchronization");
   }
 
-  async function request(path, params = {}) {
+  async function requestWithRetry(path, params = {}, retries = 2) {
     const url = new URL(`${TMDB_BASE_URL}${path}`);
-    Object.entries({ language: "en-US", ...params }).forEach(([key, value]) => {
+    const queryParams = { language: "en-US", ...params };
+    if (!token && apiKey) {
+      queryParams.api_key = apiKey;
+    }
+    Object.entries(queryParams).forEach(([key, value]) => {
       if (value !== undefined && value !== null && value !== "") {
         url.searchParams.set(key, String(value));
       }
     });
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const response = await fetchImpl(url, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          accept: "application/json",
-        },
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        const error = new Error(`TMDB request failed with status ${response.status}`);
-        error.status = response.status;
-        throw error;
+
+    const headers = {
+      accept: "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    };
+
+    let lastError;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetchImpl(url, {
+          headers,
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          const error = new Error(`TMDB request failed with status ${response.status}`);
+          error.status = response.status;
+          throw error;
+        }
+        return await response.json();
+      } catch (err) {
+        lastError = err;
+        if (err.status === 404 || attempt === retries) {
+          throw err;
+        }
+        await new Promise((res) => setTimeout(res, 500 * (attempt + 1)));
+      } finally {
+        clearTimeout(timeout);
       }
-      return await response.json();
-    } finally {
-      clearTimeout(timeout);
     }
+    throw lastError;
   }
 
-  async function fetchPages(path, params, pageCount = 5) {
+  async function fetchPages(path, params, pageCount = 3) {
     const pages = await Promise.all(
       Array.from({ length: pageCount }, (_, index) => index + 1).map((page) =>
-        request(path, { ...params, page })
+        requestWithRetry(path, { ...params, page }).catch((err) => {
+          console.warn(`TMDB fetch page ${page} failed:`, err.message);
+          return { results: [] };
+        })
       )
     );
-    return pages.flatMap((payload) => payload.results || []);
+    return pages.flatMap((payload) => payload?.results || []);
   }
 
   return {
-    fetchNowShowing({ today }) {
-      return fetchPages(
-        "/discover/movie",
-        {
-          region: "IN",
-          include_adult: false,
-          sort_by: "popularity.desc",
-          "primary_release_date.lte": today,
-        },
-        10
-      );
-    },
-    fetchComingSoon({ fromDate, toDate, originGroup }) {
-      return fetchPages("/discover/movie", {
+    async fetchNowShowing({ today } = {}) {
+      const targetDate = today || dateKey(new Date());
+      const past90 = new Date(Date.now() - 90 * DAY_MS).toISOString().slice(0, 10);
+
+      // 10 popular Hindi movies from India
+      const hindiMovies = await fetchPages("/discover/movie", {
         region: "IN",
-        include_adult: false,
+        with_origin_country: "IN",
+        with_original_language: "hi",
+        "primary_release_date.gte": past90,
+        "primary_release_date.lte": targetDate,
         sort_by: "popularity.desc",
-        with_release_type: "2|3",
-        ...(originGroup === "indian"
-          ? { with_origin_country: "IN" }
-          : { without_origin_country: "IN" }),
+        include_adult: false,
+      }, 3);
+
+      // 5 popular Hollywood movies releasing in India
+      const hollywoodMovies = await fetchPages("/discover/movie", {
+        region: "IN",
+        with_origin_country: "US",
+        with_original_language: "en",
+        "primary_release_date.gte": past90,
+        "primary_release_date.lte": targetDate,
+        sort_by: "popularity.desc",
+        include_adult: false,
+      }, 3);
+
+      return [
+        ...hindiMovies.map((movie) => ({
+          ...movie,
+          origin_country: ["IN", ...(Array.isArray(movie.origin_country) ? movie.origin_country : [])],
+          originGroup: "indian",
+        })),
+        ...hollywoodMovies.map((movie) => ({
+          ...movie,
+          origin_country: ["US", ...(Array.isArray(movie.origin_country) ? movie.origin_country : [])],
+          originGroup: "international",
+        })),
+      ];
+    },
+
+    async fetchComingSoon({ fromDate, toDate, originGroup }) {
+      if (originGroup === "indian") {
+        // 5 most popular upcoming Hindi movies from India
+        const movies = await fetchPages("/discover/movie", {
+          region: "IN",
+          with_origin_country: "IN",
+          with_original_language: "hi",
+          "primary_release_date.gte": fromDate,
+          "primary_release_date.lte": toDate,
+          sort_by: "popularity.desc",
+          include_adult: false,
+        }, 3);
+        return movies.map((movie) => ({
+          ...movie,
+          origin_country: ["IN", ...(Array.isArray(movie.origin_country) ? movie.origin_country : [])],
+          originGroup: "indian",
+        }));
+      }
+
+      // 5 most popular upcoming international movies
+      const movies = await fetchPages("/discover/movie", {
+        without_origin_country: "IN",
         "primary_release_date.gte": fromDate,
         "primary_release_date.lte": toDate,
-      }).then((movies) =>
-        originGroup === "indian"
-          ? movies.map((movie) => ({
-              ...movie,
-              origin_country: [
-                "IN",
-                ...(Array.isArray(movie.origin_country) ? movie.origin_country : []),
-              ],
-            }))
-          : movies
-      );
+        sort_by: "popularity.desc",
+        include_adult: false,
+      }, 3);
+      return movies.map((movie) => ({
+        ...movie,
+        originGroup: "international",
+      }));
     },
+
     fetchDetails(tmdbId) {
-      return request(`/movie/${tmdbId}`, {
+      return requestWithRetry(`/movie/${tmdbId}`, {
         append_to_response: "credits,videos",
       });
     },
@@ -293,6 +446,7 @@ async function synchronizeTmdbMovies({
   if (!client) return { skipped: true, reason: "missing-token" };
 
   const existingMovies = await MovieModel.find({ source: "tmdb" }).lean();
+  const allExistingMovies = await MovieModel.find({}).lean();
   const excludedIds = new Set(excludeTmdbIds.map(Number));
   const today = dateKey(now);
   const { fromDate: comingSoonFrom, toDate: nextMonthEnd } = comingSoonWindow(now);
@@ -310,7 +464,7 @@ async function synchronizeTmdbMovies({
     ),
     typeof client.fetchNowShowing === "function"
       ? client.fetchNowShowing({ today })
-      : client.fetchNowPlaying(),
+      : (typeof client.fetchNowPlaying === "function" ? client.fetchNowPlaying() : []),
     client.fetchComingSoon({
       fromDate: comingSoonFrom,
       toDate: nextMonthEnd,
@@ -322,6 +476,7 @@ async function synchronizeTmdbMovies({
       originGroup: "international",
     }),
   ]);
+
   const comingSoonPool = [...indianComingSoonPool, ...internationalComingSoonPool];
   const refreshedMovies = existingDetails.map(({ movie, details }) => ({
     ...movie,
@@ -330,11 +485,13 @@ async function synchronizeTmdbMovies({
       : {}),
     catalogEligible: isEligibleMovie(details),
   }));
+
   const lifecycle = planLifecycle(refreshedMovies, now);
   const deletedIds = new Set(lifecycle.deleteIds.map(String));
   const promotedIds = new Set(
     lifecycle.promotions.map((promotion) => String(promotion._id))
   );
+
   const existingCandidates = existingDetails.flatMap(({ movie, details }) => {
     if (!isEligibleMovie(details) || deletedIds.has(String(movie._id))) return [];
     const projectedCategory = promotedIds.has(String(movie._id))
@@ -354,13 +511,23 @@ async function synchronizeTmdbMovies({
       existingMovieId: movie._id,
     }];
   });
+
   const uniqueCandidates = (candidates) => {
-    const byId = new Map();
-    candidates.forEach((candidate) => {
-      if (!byId.has(candidate.id) || candidate.existingMovieId) byId.set(candidate.id, candidate);
-    });
-    return [...byId.values()];
+    const list = [];
+    for (const candidate of candidates) {
+      if (!isEligibleMovie(candidate)) continue;
+      const dupeIndex = list.findIndex((existing) => isDuplicateMovie(candidate, existing));
+      if (dupeIndex === -1) {
+        list.push(candidate);
+      } else {
+        if (!list[dupeIndex].existingMovieId && (candidate.existingMovieId || candidate.popularity > list[dupeIndex].popularity)) {
+          list[dupeIndex] = candidate;
+        }
+      }
+    }
+    return list;
   };
+
   const selectCategory = (pool, category, target, { minReleaseDate, maxReleaseDate } = {}) => {
     const selected = [];
     const selectedIds = new Set();
@@ -375,13 +542,14 @@ async function synchronizeTmdbMovies({
         })
         .sort(category === "nowShowing"
           ? compareByReleaseAndPopularity
-          : (left, right) => String(left.release_date).localeCompare(String(right.release_date)) || compareByReleaseAndPopularity(left, right));
+          : compareByPopularity);
       const groupSelected = candidates.filter((candidate) => !selectedIds.has(candidate.id)).slice(0, target[originGroup]);
       groupSelected.forEach((candidate) => selectedIds.add(candidate.id));
       selected.push(...groupSelected);
     }
     return selected;
   };
+
   const selectedNow = selectCategory(
     [...existingCandidates, ...nowShowingPool.map((movie) => ({
       ...movie,
@@ -392,6 +560,7 @@ async function synchronizeTmdbMovies({
     NOW_SHOWING_TARGETS,
     { maxReleaseDate: today }
   );
+
   const selectedNowIds = new Set(selectedNow.map((candidate) => candidate.id));
   const selectedComing = selectCategory(
     [...existingCandidates, ...comingSoonPool.map((movie) => ({
@@ -399,16 +568,18 @@ async function synchronizeTmdbMovies({
       originGroup: originGroupFor(movie),
       projectedCategory: "comingSoon",
     }))]
-      .filter((candidate) => !selectedNowIds.has(candidate.id)),
+      .filter((candidate) => !selectedNowIds.has(candidate.id) && !selectedNow.some((nowMovie) => isDuplicateMovie(candidate, nowMovie))),
     "comingSoon",
     { indian: COMING_SOON_PER_GROUP, international: COMING_SOON_PER_GROUP },
     { minReleaseDate: comingSoonFrom, maxReleaseDate: nextMonthEnd }
   );
+
   const selectedByExistingId = new Map(
     [...selectedNow, ...selectedComing]
       .filter((candidate) => candidate.existingMovieId)
       .map((candidate) => [String(candidate.existingMovieId), candidate.projectedCategory])
   );
+
   const idsToDelete = existingMovies
     .filter((movie) => {
       if (deletedIds.has(String(movie._id))) return true;
@@ -417,10 +588,23 @@ async function synchronizeTmdbMovies({
     })
     .map((movie) => movie._id);
 
+  // Automatically remove manual duplicates (e.g. rogue Drishyam 3 or manual duplicates of TMDB movies)
+  const manualDuplicates = allExistingMovies.filter((movie) => {
+    if (movie.source !== "manual") return false;
+    return (
+      selectedNow.some((s) => isDuplicateMovie(movie, s)) ||
+      selectedComing.some((s) => isDuplicateMovie(movie, s))
+    );
+  });
+  if (manualDuplicates.length) {
+    idsToDelete.push(...manualDuplicates.map((m) => m._id));
+  }
+
   const selected = [
     ...selectedNow.filter((movie) => !movie.existingMovieId).map((movie) => ({ movie, category: "nowShowing" })),
     ...selectedComing.filter((movie) => !movie.existingMovieId).map((movie) => ({ movie, category: "comingSoon" })),
   ];
+
   const newDocuments = await Promise.all(
     selected.map(async ({ movie, category }) =>
       buildMovieDocument(
@@ -432,6 +616,7 @@ async function synchronizeTmdbMovies({
       )
     )
   );
+
   const refreshedDocuments = existingDetails
     .filter(({ movie }) => !idsToDelete.map(String).includes(String(movie._id)))
     .map(({ movie, details }) => {
@@ -453,6 +638,7 @@ async function synchronizeTmdbMovies({
       document.isActive = selectedByExistingId.has(String(movie._id));
       return { _id: movie._id, document };
     });
+
   newDocuments.forEach((document) => {
     document.isActive = true;
   });
@@ -463,6 +649,13 @@ async function synchronizeTmdbMovies({
       MovieModel.deleteMany({
         _id: { $in: idsToDelete },
         source: "tmdb",
+      })
+    );
+  }
+  if (manualDuplicates.length) {
+    writes.push(
+      MovieModel.deleteMany({
+        _id: { $in: manualDuplicates.map((m) => m._id) },
       })
     );
   }
@@ -503,10 +696,19 @@ async function synchronizeTmdbMovies({
 }
 
 module.exports = {
+  COMING_SOON_PER_GROUP,
   DAY_MS,
+  NOW_SHOWING_TARGETS,
+  areDuplicateTitles,
   buildMovieDocument,
   comingSoonWindow,
   createTmdbClient,
+  dateKey,
+  extractTitleFingerprint,
+  getIndianMarketDate,
+  isDuplicateMovie,
+  isEligibleMovie,
+  originGroupFor,
   planLifecycle,
   selectByOrigin,
   synchronizeTmdbMovies,
